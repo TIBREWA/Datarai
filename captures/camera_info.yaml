@@ -1,0 +1,56 @@
+image_width: 640
+image_height: 480
+camera_name: wrist_cam
+frame_id: camera_optical_frame
+camera_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 549.7494651368435
+  - 0.0
+  - 320.0
+  - 0.0
+  - 549.7494651368435
+  - 240.0
+  - 0.0
+  - 0.0
+  - 1.0
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data:
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+projection_matrix:
+  rows: 3
+  cols: 4
+  data:
+  - 549.7494651368435
+  - 0.0
+  - 320.0
+  - 0.0
+  - 0.0
+  - 549.7494651368435
+  - 240.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  - 0.0

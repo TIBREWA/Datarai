@@ -69,9 +69,8 @@ def _ros_stack(context):
     xacro_path = os.path.join(bridge_share, "urdf", "ur_isaac.urdf.xacro")
     controllers_yaml = os.path.join(bridge_share, "config", "ros2_controllers.yaml")
     moveit_controllers = os.path.join(bridge_share, "config", "moveit_controllers.yaml")
-    rviz_config = os.path.join(
-        get_package_share_directory("ur_moveit_config"), "config", "moveit.rviz"
-    )
+    # MoveIt's stock RViz layout plus the wrist camera overlay and camera TF.
+    rviz_config = os.path.join(bridge_share, "rviz", "ur5e_wrist_cam.rviz")
 
     moveit_config = (
         MoveItConfigsBuilder("ur", package_name="ur_moveit_config")
