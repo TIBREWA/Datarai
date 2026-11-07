@@ -2,7 +2,7 @@
 
 UR5e in Isaac Sim 6.0 driven by MoveIt on ROS 2 Jazzy. I added a wrist camera and a script that photographs a cube from 5 poses and checks the saved poses by projecting the cube back into the images.
 
-The projected cube centre lands 2.1 px on average (4.3 px max) from the centre of the red pixels. Annotated images are in `captures/annotated/`.
+The projected cube centre lands 1.9 px on average (4.2 px max) from the centre of the red pixels. Annotated images are in `captures/annotated/`.
 
 ![pose 1](captures/annotated/pose_01.png)
 
@@ -63,16 +63,16 @@ ros2 run ur5e_isaac_bridge capture_wrist_images.py --out captures
 ros2 run ur5e_isaac_bridge verify_projection.py captures
 ```
 
-Output from the run in `captures/`:
+Output from the run in `captures/`, a single run from the start pose with all 5 views done first try:
 
 ```
 pose   proj u   proj v  depth m in img  red px  diff px
-   0    319.4    241.0    0.350   True    8892      2.1
-   1    320.3    240.1    0.350   True   10548      1.3
-   2    320.8    239.3    0.350   True   10597      1.4
-   3    319.1    239.5    0.300   True   12502      1.3
-   4    320.0    238.3    0.299   True   10077      4.3
-projected centre vs red centroid: mean 2.1 px, max 4.3 px
+   0    319.9    239.6    0.350   True    8903      1.8
+   1    320.5    241.2    0.350   True   10527      1.2
+   2    320.6    239.5    0.350   True   10604      1.4
+   3    318.2    240.8    0.300   True   12537      1.0
+   4    320.5    239.7    0.299   True   10041      4.2
+projected centre vs red centroid: mean 1.9 px, max 4.2 px
 ```
 
 The cube is at (0.5, 0.0, 0.0403) in `base_link`, 5 cm edge. `poses.jsonl` has one line per image with the joint angles and the `base_link` to `camera_optical_frame` pose, looked up at the image stamp.
@@ -87,7 +87,9 @@ The cube is at (0.5, 0.0, 0.0403) in `base_link`, 5 cm edge. `poses.jsonl` has o
 
 **15 Hz.** Rendering steps at 60 Hz, the helpers publish every 4th frame. Stamps are sim time, I measured the rate from those (`ros2 topic hz` shows about 23 Hz since the sim runs faster than real time).
 
-**Poses.** Instead of tuning joint angles I pick camera positions on a sphere around the cube, build a look-at pose, convert it to `tool0` and get a joint goal from `/compute_ik`. The planner kept failing when IK returned a far branch, so it now tries a few seeds and takes the solution closest to the current joints. Some arm shapes put the forearm in front of the lens, which I only saw when a run started from a different pose. So the script now counts red pixels before saving and tries the next IK solution if the cube is blocked. There are 7 candidate views and it stops after 5 work.
+**Poses.** Instead of tuning joint angles I pick camera positions on a sphere around the cube, build a look-at pose, convert it to `tool0` and get a joint goal from `/compute_ik`. The planner kept failing when IK returned a far branch, so it now tries a few seeds and takes the solution closest to the current joints. There are 7 candidate views and it stops after 5 work.
+
+**Clear view.** Some arm shapes put the arm in front of the lens, which I only saw when a run started from a different pose. The camera and cube positions are known before moving, so the script adds a temporary cylinder between them to the planning scene and asks `/check_state_validity` about each IK solution. Solutions that touch it are dropped without moving the arm, and the cylinder is removed before planning. I still count red pixels before saving, because that is the only check that looks at the real image.
 
 **Arm stopped.** After MoveIt returns I wait until no joint moves more than 0.2 mrad over 0.5 s of sim time, then take the first image stamped after that. I use positions because PhysX reports small velocities at rest. TF is looked up at the image stamp.
 
@@ -99,7 +101,8 @@ The cube is at (0.5, 0.0, 0.0403) in `base_link`, 5 cm edge. `poses.jsonl` has o
 - `frameSkipCount` is deprecated in Isaac 6.0, the replacement is `omni:sensor:tickRate` on the camera prim. I kept it since the rate is exact.
 - The robot base sits about 1.5 cm into the `simple_room` table (table top is at z = 0.0153). The cube is on the real surface, but MoveIt's table is below z = 0 so the base doesn't collide with it.
 - OMPL is random, so planning sometimes fails (the near top-down view most often). The script retries and has spare views, so which 5 views you get can change between runs.
-- The check for a blocked cube looks for red pixels, so it only works with the red cube.
+- Both view checks need the cube position from `--cube-xyz`, which has to match the one given to `spawn_ur5e.py`. The script doesn't detect the cube. I tested it at (0.42, 0.2, 0.0403) with no code changes: 2.4 px mean, 4.2 px max.
+- The red pixel check only works with the red cube.
 - On a small screen RViz opens with the camera panel squashed under MotionPlanning. Close the Displays and MotionPlanning panels or drag the divider up (Panels menu brings them back). The arm also has to be pointing at the cube for it to show up in that panel.
 - Depth images not done.
 

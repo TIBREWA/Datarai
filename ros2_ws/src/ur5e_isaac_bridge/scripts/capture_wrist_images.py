@@ -28,7 +28,7 @@ from moveit_msgs.msg import (
     MoveItErrorCodes,
     PlanningScene,
 )
-from moveit_msgs.srv import ApplyPlanningScene, GetPositionIK
+from moveit_msgs.srv import ApplyPlanningScene, GetPositionIK, GetStateValidity
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
@@ -50,6 +50,7 @@ ARM_JOINTS = [
 
 MIN_CUBE_PIXELS = 3000  # the whole cube is about 9000+ px at these distances
 MAX_IK_TRIES = 3
+SIGHT_LINE_START = 0.06  # starts past the flange, or the wrist always touches it
 
 
 def red_pixels(bgr) -> int:
@@ -129,6 +130,7 @@ class WristCapture(Node):
         self.create_subscription(JointState, "/joint_states", self._on_joints, 50)
         self.ik = self.create_client(GetPositionIK, "/compute_ik")
         self.scene = self.create_client(ApplyPlanningScene, "/apply_planning_scene")
+        self.validity = self.create_client(GetStateValidity, "/check_state_validity")
         self.move = ActionClient(self, MoveGroup, "/move_action")
 
     def _on_image(self, msg):
@@ -157,6 +159,7 @@ class WristCapture(Node):
         if not self.ik.wait_for_service(timeout_sec=30) or not self.move.wait_for_server(timeout_sec=30):
             raise RuntimeError("move_group services are not available")
         self.scene.wait_for_service(timeout_sec=10)
+        self.validity.wait_for_service(timeout_sec=10)
 
     def current_joints(self) -> dict:
         return dict(self.joint_history[-1][1])
@@ -197,6 +200,63 @@ class WristCapture(Node):
         fut = self.scene.call_async(req)
         rclpy.spin_until_future_complete(self, fut, timeout_sec=10)
         self.get_logger().info("Planning scene: added target_cube and table")
+
+    def _set_sight_line(self, T_base_cam: np.ndarray, target, cube_size, add: bool):
+        obj = CollisionObject()
+        obj.header.frame_id = BASE
+        obj.id = "sight_line"
+        obj.operation = CollisionObject.ADD if add else CollisionObject.REMOVE
+        if add:
+            eye, axis = T_base_cam[:3, 3], T_base_cam[:3, 2]
+            length = np.linalg.norm(np.asarray(target) - eye) - cube_size - SIGHT_LINE_START
+            centre = eye + axis * (SIGHT_LINE_START + length / 2)
+            # a cylinder's axis is its z, same as the optical axis
+            obj.primitives.append(SolidPrimitive(type=SolidPrimitive.CYLINDER,
+                                                 dimensions=[float(length), cube_size / 2 + 0.01]))
+            p = Pose()
+            p.position.x, p.position.y, p.position.z = map(float, centre)
+            qx, qy, qz, qw = matrix_to_quat(T_base_cam[:3, :3])
+            p.orientation.x, p.orientation.y = float(qx), float(qy)
+            p.orientation.z, p.orientation.w = float(qz), float(qw)
+            obj.primitive_poses.append(p)
+        req = ApplyPlanningScene.Request()
+        req.scene = PlanningScene(is_diff=True)
+        req.scene.world.collision_objects = [obj]
+        fut = self.scene.call_async(req)
+        rclpy.spin_until_future_complete(self, fut, timeout_sec=10)
+
+    def blocking_links(self, joints) -> list[str]:
+        # robot links touching the sight line for this joint solution
+        req = GetStateValidity.Request()
+        req.group_name = GROUP
+        req.robot_state.joint_state.name = ARM_JOINTS
+        req.robot_state.joint_state.position = [float(v) for v in joints]
+        fut = self.validity.call_async(req)
+        rclpy.spin_until_future_complete(self, fut, timeout_sec=5)
+        res = fut.result()
+        links = set()
+        for c in res.contacts:
+            if "sight_line" in (c.contact_body_1, c.contact_body_2):
+                links.update({c.contact_body_1, c.contact_body_2} - {"sight_line"})
+        return sorted(links)
+
+    def clear_view_solutions(self, solutions, T_base_cam, target, cube_size) -> list[list[float]]:
+        """Keep the IK solutions that leave the camera's view of the cube clear.
+
+        The camera and cube positions are known before moving, so the line
+        between them is too. It only exists for this check, the planner doesn't
+        need to avoid it on the way there.
+        """
+        self._set_sight_line(T_base_cam, target, cube_size, True)
+        clear = []
+        for n, joints in enumerate(solutions):
+            links = self.blocking_links(joints)
+            if links:
+                self.get_logger().info(f"IK solution {n}: {', '.join(links)} in the line of sight, rejected")
+            else:
+                clear.append(joints)
+        self._set_sight_line(T_base_cam, target, cube_size, False)
+        return clear
 
     def solve_ik(self, tool_pose: np.ndarray, extra_seeds: int = 8) -> list[list[float]]:
         # KDL gives the branch nearest its seed. OMPL kept failing on far branches,
@@ -374,6 +434,11 @@ def main():
             if not solutions:
                 log.error(f"[{i}] no collision-free IK solution, skipping")
                 continue
+            if not args.eye:
+                solutions = node.clear_view_solutions(solutions, T_base_cam_goal, target, args.cube_size)
+                if not solutions:
+                    log.error(f"[{i}] every IK solution blocks the view, skipping")
+                    continue
             img = None
             for joints in solutions[:MAX_IK_TRIES]:
                 if not node.move_to_joints(joints):
@@ -381,11 +446,11 @@ def main():
                     continue
                 t_settled = node.wait_settled()
                 frame = node.grab_after(t_settled)
-                # some arm shapes put the forearm in front of the lens
+                # the sight line check is geometry, this one looks at the real image
                 if args.eye or red_pixels(node.bridge.imgmsg_to_cv2(frame, "bgr8")) >= MIN_CUBE_PIXELS:
                     img = frame
                     break
-                log.warn(f"[{i}] arm is blocking the cube, trying the next IK solution")
+                log.warn(f"[{i}] cube not visible in the image, trying the next IK solution")
             if img is None:
                 log.error(f"[{i}] no usable image, skipping")
                 continue
